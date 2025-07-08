@@ -1,7 +1,8 @@
 // =================================================================
-// SERVIDOR PARA LA APLICACIÓN DE CONTROL DE ASISTENCIA (VERSIÓN FINAL)
+// SERVIDOR PARA LA APLICACIÓN DE CONTROL DE ASISTENCIA (VERSIÓN FINAL COMPLETA)
 // =================================================================
 
+// 1. IMPORTACIÓN DE MÓDULOS
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -13,36 +14,28 @@ const jwt = require('jsonwebtoken');
 const { parseISO, differenceInSeconds, startOfMonth, endOfMonth, getWeek } = require('date-fns');
 const { Parser } = require('json2csv');
 
+// 2. INICIALIZACIÓN Y CONFIGURACIÓN
 const app = express();
 const PORT = 3000;
-const JWT_SECRET = process.env.JWT_SECRET || 'secreto-local-para-desarrollo';
-const isProduction = process.env.NODE_ENV === 'production';
+const JWT_SECRET = 'tu_secreto_super_secreto_y_largo_y_dificil_de_adivinar_987654';
 
 app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
 
 // --- CONFIGURACIÓN DE MULTER ---
-const uploadDir = isProduction ? '/var/data/uploads' : path.join(__dirname, 'public/uploads');
-
-// En local, nos aseguramos de que la carpeta de uploads exista
-if (!isProduction && !fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir, { recursive: true });
-}
+const uploadDir = path.join(__dirname, 'public/uploads');
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
 const storage = multer.diskStorage({
-    destination: uploadDir,
+    destination: (req, file, cb) => cb(null, uploadDir),
     filename: (req, file, cb) => {
+        // Asegurarse de que req.user exista antes de acceder a req.user.id
         const userId = req.user ? req.user.id : 'unknown';
         cb(null, `${Date.now()}-${userId}.jpeg`);
     }
 });
 const upload = multer({ storage });
-
-// --- RUTA EXTRA PARA SERVIR FOTOS EN PRODUCCIÓN ---
-if (isProduction) {
-    app.use('/uploads', express.static(uploadDir));
-}
 
 // --- MIDDLEWARE DE AUTENTICACIÓN ---
 function authenticateToken(req, res, next) {
@@ -56,21 +49,11 @@ function authenticateToken(req, res, next) {
     });
 }
 
-// --- RUTAS DE LA API ---
-app.post('/api/login', (req, res) => { /* ...código... */ });
-app.get('/api/estado', authenticateToken, (req, res) => { /* ...código... */ });
-app.post('/api/fichar', authenticateToken, upload.single('foto'), (req, res) => { /* ...código... */ });
-app.get('/api/informe', authenticateToken, (req, res) => { /* ...código... */ });
-app.get('/api/usuarios', authenticateToken, (req, res) => { /* ...código... */ });
-app.post('/api/usuarios', authenticateToken, (req, res) => { /* ...código... */ });
-app.put('/api/usuarios/:id/password', authenticateToken, (req, res) => { /* ...código... */ });
-app.delete('/api/usuarios/:id', authenticateToken, (req, res) => { /* ...código... */ });
-app.get('/api/informe-mensual', authenticateToken, (req, res) => { /* ...código... */ });
-app.get('/api/exportar-csv', authenticateToken, (req, res) => { /* ...código... */ });
+// =================================================================
+// RUTAS DE LA API
+// =================================================================
 
-
-// --- PEGADO DE CÓDIGO DE RUTAS ---
-// Para que no te líes, aquí está el código completo de todas las rutas que he puesto arriba como "...código..."
+// --- RUTA PÚBLICA: LOGIN ---
 app.post('/api/login', (req, res) => {
     const { usuario, password } = req.body;
     if (!usuario || !password) return res.status(400).json({ message: 'Usuario y contraseña son requeridos.' });
@@ -86,6 +69,8 @@ app.post('/api/login', (req, res) => {
         });
     });
 });
+
+// --- RUTA EMPLEADO: OBTENER ESTADO ---
 app.get('/api/estado', authenticateToken, (req, res) => {
     const usuario_id = req.user.id;
     db.get('SELECT tipo FROM registros WHERE usuario_id = ? ORDER BY fecha_hora DESC LIMIT 1', [usuario_id], (err, row) => {
@@ -94,6 +79,8 @@ app.get('/api/estado', authenticateToken, (req, res) => {
         res.json({ estado: ultimoEstado });
     });
 });
+
+// --- RUTA EMPLEADO: FICHAJE CON FOTO ---
 app.post('/api/fichar', authenticateToken, upload.single('foto'), (req, res) => {
     const { tipo } = req.body;
     const usuario_id = req.user.id;
@@ -101,12 +88,18 @@ app.post('/api/fichar', authenticateToken, upload.single('foto'), (req, res) => 
     const foto_path = req.file ? `/uploads/${req.file.filename}` : null;
     if (!tipo || (tipo !== 'entrada' && tipo !== 'salida')) return res.status(400).json({ message: 'Tipo de fichaje inválido.' });
     if (!foto_path) return res.status(400).json({ message: 'No se ha proporcionado la foto de verificación.' });
+    
     const sql = 'INSERT INTO registros (usuario_id, fecha_hora, tipo, foto_path) VALUES (?, ?, ?, ?)';
     db.run(sql, [usuario_id, fecha_hora, tipo, foto_path], function(err) {
-        if (err) return res.status(500).json({ message: 'Error al guardar el registro.' });
+        if (err) {
+            console.error("Error en DB al fichar:", err.message);
+            return res.status(500).json({ message: 'Error al guardar el registro en la base de datos.' });
+        }
         res.json({ message: `Fichaje de ${tipo} registrado con foto.` });
     });
 });
+
+// --- RUTA ADMIN: INFORME DIARIO ---
 app.get('/api/informe', authenticateToken, (req, res) => {
     if (req.user.rol !== 'admin') return res.status(403).json({ message: 'Acceso denegado.' });
     const { fecha } = req.query;
@@ -117,6 +110,8 @@ app.get('/api/informe', authenticateToken, (req, res) => {
         res.json(rows);
     });
 });
+
+// --- RUTA ADMIN: LISTAR USUARIOS ---
 app.get('/api/usuarios', authenticateToken, (req, res) => {
     if (req.user.rol !== 'admin') return res.status(403).json({ message: 'Acceso denegado.' });
     db.all("SELECT id, nombre, usuario, rol FROM usuarios ORDER BY nombre", [], (err, rows) => {
@@ -124,6 +119,8 @@ app.get('/api/usuarios', authenticateToken, (req, res) => {
         res.json(rows);
     });
 });
+
+// --- RUTA ADMIN: CREAR USUARIO ---
 app.post('/api/usuarios', authenticateToken, (req, res) => {
     if (req.user.rol !== 'admin') return res.status(403).json({ message: 'Acceso denegado.' });
     const { nombre, usuario, password, rol } = req.body;
@@ -131,11 +128,16 @@ app.post('/api/usuarios', authenticateToken, (req, res) => {
     bcrypt.hash(password, 10, (err, hash) => {
         if (err) return res.status(500).json({ message: 'Error al encriptar.' });
         db.run('INSERT INTO usuarios (nombre, usuario, password, rol) VALUES (?, ?, ?, ?)', [nombre, usuario, hash, rol], function(err) {
-            if (err) return res.status(500).json({ message: 'Error al crear el usuario.' });
+            if (err) {
+                if (err.errno === 19) return res.status(409).json({ message: 'El usuario ya existe.' });
+                return res.status(500).json({ message: 'Error al crear el usuario.' });
+            }
             res.status(201).json({ message: `Usuario '${nombre}' creado.`, id: this.lastID });
         });
     });
 });
+
+// --- RUTA ADMIN: RESETEAR CONTRASEÑA ---
 app.put('/api/usuarios/:id/password', authenticateToken, (req, res) => {
     if (req.user.rol !== 'admin') return res.status(403).json({ message: 'Acceso denegado.' });
     const { password } = req.body;
@@ -149,6 +151,8 @@ app.put('/api/usuarios/:id/password', authenticateToken, (req, res) => {
         });
     });
 });
+
+// --- RUTA ADMIN: ELIMINAR USUARIO ---
 app.delete('/api/usuarios/:id', authenticateToken, (req, res) => {
     if (req.user.rol !== 'admin') return res.status(403).json({ message: 'Acceso denegado.' });
     if (parseInt(req.params.id, 10) === req.user.id) return res.status(400).json({ message: 'No puedes eliminar tu propia cuenta.' });
@@ -158,32 +162,63 @@ app.delete('/api/usuarios/:id', authenticateToken, (req, res) => {
         res.json({ message: 'Usuario eliminado.' });
     });
 });
+
+// --- RUTA ADMIN: INFORME MENSUAL (LÓGICA SIMPLIFICADA) ---
 app.get('/api/informe-mensual', authenticateToken, (req, res) => {
+    if (req.user.rol !== 'admin') return res.status(403).json({ message: 'Acceso denegado.' });
     const { anio, mes, usuarioId } = req.query;
     if (!anio || !mes || !usuarioId) return res.status(400).json({ message: 'Parámetros incompletos.' });
-    const fechaInicio = startOfMonth(new Date(anio, mes - 1, 1));
-    const fechaFin = endOfMonth(fechaInicio);
-    const sql = `SELECT fecha_hora, tipo FROM registros WHERE usuario_id = ? AND fecha_hora BETWEEN ? AND ? ORDER BY fecha_hora ASC`;
-    db.all(sql, [usuarioId, fechaInicio.toISOString(), fechaFin.toISOString()], (err, registros) => {
-        if (err) return res.status(500).json({ message: 'Error en la base de datos.' });
-        const periodosTrabajados = []; let entradaActual = null;
-        for (const registro of registros) {
-            if (registro.tipo === 'entrada' && !entradaActual) entradaActual = registro.fecha_hora;
-            else if (registro.tipo === 'salida' && entradaActual) {
-                const duracionSegundos = differenceInSeconds(parseISO(registro.fecha_hora), parseISO(entradaActual));
-                if (duracionSegundos >= 0) periodosTrabajados.push({ entrada: entradaActual, salida: registro.fecha_hora, duracionSegundos });
-                entradaActual = null;
+
+    try {
+        const fechaInicio = startOfMonth(new Date(anio, mes - 1, 1));
+        const fechaFin = endOfMonth(fechaInicio);
+        const sql = `SELECT fecha_hora, tipo FROM registros WHERE usuario_id = ? AND fecha_hora BETWEEN ? AND ? ORDER BY fecha_hora ASC`;
+        
+        db.all(sql, [usuarioId, fechaInicio.toISOString(), fechaFin.toISOString()], (err, registros) => {
+            if (err) {
+                console.error("DB Error en /informe-mensual:", err.message);
+                return res.status(500).json({ message: 'Error en la base de datos.' });
             }
-        }
-        res.json(periodosTrabajados);
-    });
+
+            const periodosTrabajados = [];
+            let entradaActual = null;
+            for (const registro of registros) {
+                if (registro.tipo === 'entrada' && !entradaActual) {
+                    entradaActual = registro.fecha_hora;
+                } else if (registro.tipo === 'salida' && entradaActual) {
+                    const fechaEntrada = parseISO(entradaActual);
+                    const fechaSalida = parseISO(registro.fecha_hora);
+                    const duracionSegundos = differenceInSeconds(fechaSalida, fechaEntrada);
+
+                    if (duracionSegundos >= 0) {
+                        periodosTrabajados.push({
+                            fecha: entradaActual.split('T')[0],
+                            entrada: entradaActual,
+                            salida: registro.fecha_hora,
+                            duracionSegundos: duracionSegundos
+                        });
+                    }
+                    entradaActual = null;
+                }
+            }
+            res.json(periodosTrabajados);
+        });
+    } catch (e) {
+        console.error("Error crítico en /informe-mensual:", e.message);
+        res.status(500).json({ message: "Error interno del servidor." });
+    }
 });
+
+// --- RUTA ADMIN: EXPORTAR A CSV ---
 app.get('/api/exportar-csv', authenticateToken, (req, res) => {
+    if (req.user.rol !== 'admin') return res.status(403).json({ message: 'Acceso denegado.' });
     const { anio, mes, usuarioId } = req.query;
     if (!anio || !mes || !usuarioId) return res.status(400).json({ message: 'Faltan parámetros.' });
+
     const fechaInicio = startOfMonth(new Date(anio, mes - 1, 1));
     const fechaFin = endOfMonth(fechaInicio);
     const sql = `SELECT u.nombre, r.fecha_hora, r.tipo FROM registros r JOIN usuarios u ON r.usuario_id = u.id WHERE r.usuario_id = ? AND r.fecha_hora BETWEEN ? AND ? ORDER BY r.fecha_hora ASC`;
+
     db.all(sql, [usuarioId, fechaInicio.toISOString(), fechaFin.toISOString()], (err, data) => {
         if (err) return res.status(500).json({ message: 'Error al obtener datos.' });
         const fields = ['nombre', 'fecha_hora', 'tipo'];
@@ -195,7 +230,9 @@ app.get('/api/exportar-csv', authenticateToken, (req, res) => {
     });
 });
 
-// --- INICIO DEL SERVIDOR ---
+// =================================================================
+// INICIO DEL SERVIDOR
+// =================================================================
 app.listen(PORT, () => {
-    console.log(`Servidor corriendo en http://localhost:${PORT}`);
+    console.log(`¡Servidor corriendo en http://localhost:${PORT}`);
 });
