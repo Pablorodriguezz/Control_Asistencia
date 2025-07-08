@@ -23,12 +23,12 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
 if (process.env.NODE_ENV === 'production') {
-    app.use('/uploads', express.static(path.join(process.env.RENDER_DISK_PATH, 'uploads')));
+    app.use('/uploads', express.static('/var/data/uploads'));
 }
 
 // --- CONFIGURACIÓN DE MULTER ---
 const uploadDir = process.env.NODE_ENV === 'production'
-    ? path.join(process.env.RENDER_DISK_PATH, 'uploads')
+    ? '/var/data/uploads'  // <-- RUTA ABSOLUTA Y CORRECTA PARA RENDER
     : path.join(__dirname, 'public/uploads');
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
