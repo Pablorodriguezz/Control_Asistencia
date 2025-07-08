@@ -28,14 +28,17 @@ if (process.env.NODE_ENV === 'production') {
 
 // --- CONFIGURACIÓN DE MULTER ---
 const uploadDir = process.env.NODE_ENV === 'production'
-    ? '/var/data/uploads'  // <-- RUTA ABSOLUTA Y CORRECTA PARA RENDER
+    ? '/var/data/uploads'
     : path.join(__dirname, 'public/uploads');
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+
+// Asegurarse de que el directorio de subidas exista
+if (!fs.existsSync(uploadDir)) {
+    fs.mkdirSync(uploadDir, { recursive: true });
+}
 
 const storage = multer.diskStorage({
     destination: (req, file, cb) => cb(null, uploadDir),
     filename: (req, file, cb) => {
-        // Asegurarse de que req.user exista antes de acceder a req.user.id
         const userId = req.user ? req.user.id : 'unknown';
         cb(null, `${Date.now()}-${userId}.jpeg`);
     }
