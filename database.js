@@ -1,8 +1,11 @@
 // database.js
 const sqlite3 = require('sqlite3').verbose();
 const bcrypt = require('bcryptjs');
-
-const db = new sqlite3.Database('./asistencia.db', (err) => {
+const path = require('path');
+const dbPath = process.env.NODE_ENV === 'production' 
+    ? path.join(process.env.RENDER_DISK_PATH, 'asistencia.db') 
+    : './asistencia.db';
+const db = new sqlite3.Database(dbPath, (err) => {
     if (err) {
         console.error(err.message);
     }

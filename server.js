@@ -22,9 +22,14 @@ const JWT_SECRET = 'tu_secreto_super_secreto_y_largo_y_dificil_de_adivinar_98765
 app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
+if (process.env.NODE_ENV === 'production') {
+    app.use('/uploads', express.static(path.join(process.env.RENDER_DISK_PATH, 'uploads')));
+}
 
 // --- CONFIGURACIÓN DE MULTER ---
-const uploadDir = path.join(__dirname, 'public/uploads');
+const uploadDir = process.env.NODE_ENV === 'production'
+    ? path.join(process.env.RENDER_DISK_PATH, 'uploads')
+    : path.join(__dirname, 'public/uploads');
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
 const storage = multer.diskStorage({
