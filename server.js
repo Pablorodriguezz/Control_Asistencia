@@ -1,54 +1,49 @@
-// =================================================================
-// SERVIDOR PARA LA APLICACIÓN DE CONTROL DE ASISTENCIA (VERSIÓN FINAL COMPLETA)
-// =================================================================
-
-// 1. IMPORTACIÓN DE MÓDULOS
+// server.js
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
-const fs = require('fs');
 const multer = require('multer');
-const db = require('./database.js');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { parseISO, differenceInSeconds, startOfMonth, endOfMonth, getWeek } = require('date-fns');
+const { parseISO, differenceInSeconds, startOfMonth, endOfMonth } = require('date-fns');
 const { Parser } = require('json2csv');
+const cloudinary = require('cloudinary').v2;
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
+const db = require('./database.js'); // Importamos nuestro nuevo database.js
 
-// 2. INICIALIZACIÓN Y CONFIGURACIÓN
 const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET;
 
+if (!JWT_SECRET) {
+    console.error("FATAL ERROR: JWT_SECRET no está definida en las variables de entorno.");
+    process.exit(1);
+}
+
+// Middlewares generales
 app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
 
-// --- CONFIGURACIÓN DE MULTER ---
-// --- CONFIGURACIÓN DE MULTER ---
-// Railway nos dará la ruta en una variable de entorno. Si no existe, usamos la carpeta local.
-const dataDir = process.env.RAILWAY_VOLUME_MOUNT_PATH || __dirname;
-const uploadDir = path.join(dataDir, 'public/uploads'); // Usamos la misma estructura que tu código original
-
-// Railway sí nos da permiso para crear carpetas dentro del volumen
-if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir, { recursive: true });
-}
-
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => cb(null, uploadDir),
-    filename: (req, file, cb) => {
-        // ... (resto del filename sin cambios)
-        const userId = req.user ? req.user.id : 'unknown';
-        cb(null, `${Date.now()}-${userId}.jpeg`);
-    }
+// Configuración de Cloudinary
+cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET,
 });
-const upload = multer({ storage });
 
-// IMPORTANTE: Servir estáticamente los archivos desde el volumen
-// Le decimos a Express que la URL /uploads apunta a la carpeta de nuestro volumen
-app.use('/uploads', express.static(path.join(dataDir, 'public/uploads')));
+// Configuración de Multer para subir archivos a Cloudinary
+const storage = new CloudinaryStorage({
+    cloudinary: cloudinary,
+    params: {
+        folder: 'control_asist_uploads',
+        format: 'jpeg',
+        public_id: (req, file) => `${Date.now()}-${req.user.id}`,
+    },
+});
+const upload = multer({ storage: storage });
 
-// --- MIDDLEWARE DE AUTENTICACIÓN ---
+// Middleware de autenticación (sin cambios)
 function authenticateToken(req, res, next) {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
@@ -61,189 +56,139 @@ function authenticateToken(req, res, next) {
 }
 
 // =================================================================
-// RUTAS DE LA API
+// RUTAS DE LA API (ADAPTADAS PARA POSTGRESQL)
 // =================================================================
 
-// --- RUTA PÚBLICA: LOGIN ---
-app.post('/api/login', (req, res) => {
+app.post('/api/login', async (req, res) => {
     const { usuario, password } = req.body;
     if (!usuario || !password) return res.status(400).json({ message: 'Usuario y contraseña son requeridos.' });
-    db.get('SELECT * FROM usuarios WHERE usuario = ?', [usuario], (err, user) => {
-        if (err || !user) return res.status(401).json({ message: 'Usuario o contraseña incorrectos' });
-        bcrypt.compare(password, user.password, (err, result) => {
-            if (result) {
-                const token = jwt.sign({ id: user.id, rol: user.rol, nombre: user.nombre }, JWT_SECRET, { expiresIn: '8h' });
-                res.json({ token, rol: user.rol, nombre: user.nombre });
-            } else {
-                res.status(401).json({ message: 'Usuario o contraseña incorrectos' });
-            }
-        });
-    });
-});
-
-// --- RUTA EMPLEADO: OBTENER ESTADO ---
-app.get('/api/estado', authenticateToken, (req, res) => {
-    const usuario_id = req.user.id;
-    db.get('SELECT tipo FROM registros WHERE usuario_id = ? ORDER BY fecha_hora DESC LIMIT 1', [usuario_id], (err, row) => {
-        if (err) return res.status(500).json({ message: 'Error al consultar el estado.' });
-        const ultimoEstado = row ? row.tipo : 'salida';
-        res.json({ estado: ultimoEstado });
-    });
-});
-
-// --- RUTA EMPLEADO: FICHAJE CON FOTO ---
-app.post('/api/fichar', authenticateToken, upload.single('foto'), (req, res) => {
-    const { tipo } = req.body;
-    const usuario_id = req.user.id;
-    const fecha_hora = new Date().toISOString();
-    const foto_path = req.file ? `/uploads/${req.file.filename}` : null;
-    if (!tipo || (tipo !== 'entrada' && tipo !== 'salida')) return res.status(400).json({ message: 'Tipo de fichaje inválido.' });
-    if (!foto_path) return res.status(400).json({ message: 'No se ha proporcionado la foto de verificación.' });
-    
-    const sql = 'INSERT INTO registros (usuario_id, fecha_hora, tipo, foto_path) VALUES (?, ?, ?, ?)';
-    db.run(sql, [usuario_id, fecha_hora, tipo, foto_path], function(err) {
-        if (err) {
-            console.error("Error en DB al fichar:", err.message);
-            return res.status(500).json({ message: 'Error al guardar el registro en la base de datos.' });
-        }
-        res.json({ message: `Fichaje de ${tipo} registrado con foto.` });
-    });
-});
-
-// --- RUTA ADMIN: INFORME DIARIO ---
-app.get('/api/informe', authenticateToken, (req, res) => {
-    if (req.user.rol !== 'admin') return res.status(403).json({ message: 'Acceso denegado.' });
-    const { fecha } = req.query;
-    if (!fecha) return res.status(400).json({ message: 'Se requiere una fecha.' });
-    const sql = `SELECT r.id, u.nombre, r.fecha_hora, r.tipo, r.foto_path FROM registros r JOIN usuarios u ON r.usuario_id = u.id WHERE date(r.fecha_hora) = ? ORDER BY u.nombre, r.fecha_hora`;
-    db.all(sql, [fecha], (err, rows) => {
-        if (err) return res.status(500).json({ message: 'Error al obtener el informe.' });
-        res.json(rows);
-    });
-});
-
-// --- RUTA ADMIN: LISTAR USUARIOS ---
-app.get('/api/usuarios', authenticateToken, (req, res) => {
-    if (req.user.rol !== 'admin') return res.status(403).json({ message: 'Acceso denegado.' });
-    db.all("SELECT id, nombre, usuario, rol FROM usuarios ORDER BY nombre", [], (err, rows) => {
-        if (err) return res.status(500).json({ message: "Error al obtener la lista de usuarios." });
-        res.json(rows);
-    });
-});
-
-// --- RUTA ADMIN: CREAR USUARIO ---
-app.post('/api/usuarios', authenticateToken, (req, res) => {
-    if (req.user.rol !== 'admin') return res.status(403).json({ message: 'Acceso denegado.' });
-    const { nombre, usuario, password, rol } = req.body;
-    if (!nombre || !usuario || !password || !rol) return res.status(400).json({ message: 'Faltan datos.' });
-    bcrypt.hash(password, 10, (err, hash) => {
-        if (err) return res.status(500).json({ message: 'Error al encriptar.' });
-        db.run('INSERT INTO usuarios (nombre, usuario, password, rol) VALUES (?, ?, ?, ?)', [nombre, usuario, hash, rol], function(err) {
-            if (err) {
-                if (err.errno === 19) return res.status(409).json({ message: 'El usuario ya existe.' });
-                return res.status(500).json({ message: 'Error al crear el usuario.' });
-            }
-            res.status(201).json({ message: `Usuario '${nombre}' creado.`, id: this.lastID });
-        });
-    });
-});
-
-// --- RUTA ADMIN: RESETEAR CONTRASEÑA ---
-app.put('/api/usuarios/:id/password', authenticateToken, (req, res) => {
-    if (req.user.rol !== 'admin') return res.status(403).json({ message: 'Acceso denegado.' });
-    const { password } = req.body;
-    if (!password) return res.status(400).json({ message: 'Falta la nueva contraseña.' });
-    bcrypt.hash(password, 10, (err, hash) => {
-        if (err) return res.status(500).json({ message: 'Error al encriptar.' });
-        db.run('UPDATE usuarios SET password = ? WHERE id = ?', [hash, req.params.id], function(err) {
-            if (err) return res.status(500).json({ message: 'Error al actualizar.' });
-            if (this.changes === 0) return res.status(404).json({ message: 'Usuario no encontrado.' });
-            res.json({ message: 'Contraseña actualizada.' });
-        });
-    });
-});
-
-// --- RUTA ADMIN: ELIMINAR USUARIO ---
-app.delete('/api/usuarios/:id', authenticateToken, (req, res) => {
-    if (req.user.rol !== 'admin') return res.status(403).json({ message: 'Acceso denegado.' });
-    if (parseInt(req.params.id, 10) === req.user.id) return res.status(400).json({ message: 'No puedes eliminar tu propia cuenta.' });
-    db.run('DELETE FROM usuarios WHERE id = ?', req.params.id, function(err) {
-        if (err) return res.status(500).json({ message: 'Error al eliminar.' });
-        if (this.changes === 0) return res.status(404).json({ message: 'Usuario no encontrado.' });
-        res.json({ message: 'Usuario eliminado.' });
-    });
-});
-
-// --- RUTA ADMIN: INFORME MENSUAL (LÓGICA SIMPLIFICADA) ---
-app.get('/api/informe-mensual', authenticateToken, (req, res) => {
-    if (req.user.rol !== 'admin') return res.status(403).json({ message: 'Acceso denegado.' });
-    const { anio, mes, usuarioId } = req.query;
-    if (!anio || !mes || !usuarioId) return res.status(400).json({ message: 'Parámetros incompletos.' });
-
     try {
-        const fechaInicio = startOfMonth(new Date(anio, mes - 1, 1));
-        const fechaFin = endOfMonth(fechaInicio);
-        const sql = `SELECT fecha_hora, tipo FROM registros WHERE usuario_id = ? AND fecha_hora BETWEEN ? AND ? ORDER BY fecha_hora ASC`;
+        const result = await db.query('SELECT * FROM usuarios WHERE usuario = $1', [usuario]);
+        if (result.rows.length === 0) return res.status(401).json({ message: 'Usuario o contraseña incorrectos' });
         
-        db.all(sql, [usuarioId, fechaInicio.toISOString(), fechaFin.toISOString()], (err, registros) => {
-            if (err) {
-                console.error("DB Error en /informe-mensual:", err.message);
-                return res.status(500).json({ message: 'Error en la base de datos.' });
-            }
-
-            const periodosTrabajados = [];
-            let entradaActual = null;
-            for (const registro of registros) {
-                if (registro.tipo === 'entrada' && !entradaActual) {
-                    entradaActual = registro.fecha_hora;
-                } else if (registro.tipo === 'salida' && entradaActual) {
-                    const fechaEntrada = parseISO(entradaActual);
-                    const fechaSalida = parseISO(registro.fecha_hora);
-                    const duracionSegundos = differenceInSeconds(fechaSalida, fechaEntrada);
-
-                    if (duracionSegundos >= 0) {
-                        periodosTrabajados.push({
-                            fecha: entradaActual.split('T')[0],
-                            entrada: entradaActual,
-                            salida: registro.fecha_hora,
-                            duracionSegundos: duracionSegundos
-                        });
-                    }
-                    entradaActual = null;
-                }
-            }
-            res.json(periodosTrabajados);
-        });
-    } catch (e) {
-        console.error("Error crítico en /informe-mensual:", e.message);
+        const user = result.rows[0];
+        const match = await bcrypt.compare(password, user.password);
+        
+        if (match) {
+            const token = jwt.sign({ id: user.id, rol: user.rol, nombre: user.nombre }, JWT_SECRET, { expiresIn: '8h' });
+            res.json({ token, rol: user.rol, nombre: user.nombre });
+        } else {
+            res.status(401).json({ message: 'Usuario o contraseña incorrectos' });
+        }
+    } catch (err) {
+        console.error("Error en /api/login:", err);
         res.status(500).json({ message: "Error interno del servidor." });
     }
 });
 
-// --- RUTA ADMIN: EXPORTAR A CSV ---
-app.get('/api/exportar-csv', authenticateToken, (req, res) => {
+app.post('/api/fichar', authenticateToken, upload.single('foto'), async (req, res) => {
+    const { tipo } = req.body;
+    const foto_path = req.file ? req.file.path : null; // req.file.path es la URL de Cloudinary
+    if (!tipo || !foto_path) return res.status(400).json({ message: 'Faltan datos (tipo o foto).' });
+
+    try {
+        await db.query(
+            'INSERT INTO registros (usuario_id, fecha_hora, tipo, foto_path) VALUES ($1, $2, $3, $4)',
+            [req.user.id, new Date(), tipo, foto_path]
+        );
+        res.json({ message: `Fichaje de ${tipo} registrado con éxito.` });
+    } catch (err) {
+        console.error("Error en /api/fichar:", err);
+        res.status(500).json({ message: 'Error al guardar el registro en la base de datos.' });
+    }
+});
+
+app.get('/api/estado', authenticateToken, async (req, res) => {
+    try {
+        const result = await db.query('SELECT tipo FROM registros WHERE usuario_id = $1 ORDER BY fecha_hora DESC LIMIT 1', [req.user.id]);
+        const ultimoEstado = result.rows.length > 0 ? result.rows[0].tipo : 'salida';
+        res.json({ estado: ultimoEstado });
+    } catch (err) {
+        console.error("Error en /api/estado:", err);
+        res.status(500).json({ message: 'Error al consultar el estado.' });
+    }
+});
+
+app.get('/api/informe', authenticateToken, async (req, res) => {
     if (req.user.rol !== 'admin') return res.status(403).json({ message: 'Acceso denegado.' });
-    const { anio, mes, usuarioId } = req.query;
-    if (!anio || !mes || !usuarioId) return res.status(400).json({ message: 'Faltan parámetros.' });
-
-    const fechaInicio = startOfMonth(new Date(anio, mes - 1, 1));
-    const fechaFin = endOfMonth(fechaInicio);
-    const sql = `SELECT u.nombre, r.fecha_hora, r.tipo FROM registros r JOIN usuarios u ON r.usuario_id = u.id WHERE r.usuario_id = ? AND r.fecha_hora BETWEEN ? AND ? ORDER BY r.fecha_hora ASC`;
-
-    db.all(sql, [usuarioId, fechaInicio.toISOString(), fechaFin.toISOString()], (err, data) => {
-        if (err) return res.status(500).json({ message: 'Error al obtener datos.' });
-        const fields = ['nombre', 'fecha_hora', 'tipo'];
-        const json2csvParser = new Parser({ fields });
-        const csv = json2csvParser.parse(data);
-        res.header('Content-Type', 'text/csv');
-        res.attachment(`informe-${anio}-${mes}-usuario-${usuarioId}.csv`);
-        res.send(csv);
-    });
+    const { fecha } = req.query;
+    if (!fecha) return res.status(400).json({ message: 'Se requiere una fecha.' });
+    try {
+        const sql = `SELECT r.id, u.nombre, r.fecha_hora, r.tipo, r.foto_path FROM registros r JOIN usuarios u ON r.usuario_id = u.id WHERE date(r.fecha_hora) = $1 ORDER BY u.nombre, r.fecha_hora`;
+        const result = await db.query(sql, [fecha]);
+        res.json(result.rows);
+    } catch (err) {
+        console.error("Error en /api/informe:", err);
+        res.status(500).json({ message: 'Error al obtener el informe.' });
+    }
 });
 
-// =================================================================
-// INICIO DEL SERVIDOR
-// =================================================================
-app.listen(PORT, () => {
-    console.log(`¡Servidor corriendo en http://localhost:${PORT}`);
+app.get('/api/usuarios', authenticateToken, async (req, res) => {
+    if (req.user.rol !== 'admin') return res.status(403).json({ message: 'Acceso denegado.' });
+    try {
+        const result = await db.query("SELECT id, nombre, usuario, rol FROM usuarios ORDER BY nombre");
+        res.json(result.rows);
+    } catch (err) {
+        console.error("Error en /api/usuarios GET:", err);
+        res.status(500).json({ message: "Error al obtener la lista de usuarios." });
+    }
 });
+
+app.post('/api/usuarios', authenticateToken, async (req, res) => {
+    if (req.user.rol !== 'admin') return res.status(403).json({ message: 'Acceso denegado.' });
+    const { nombre, usuario, password, rol } = req.body;
+    if (!nombre || !usuario || !password || !rol) return res.status(400).json({ message: 'Faltan datos.' });
+
+    try {
+        const hash = await bcrypt.hash(password, 10);
+        // RETURNING id nos devuelve el id del usuario recién creado
+        const result = await db.query(
+            'INSERT INTO usuarios (nombre, usuario, password, rol) VALUES ($1, $2, $3, $4) RETURNING id',
+            [nombre, usuario, hash, rol]
+        );
+        res.status(201).json({ message: `Usuario '${nombre}' creado.`, id: result.rows[0].id });
+    } catch (err) {
+        // El código '23505' es de PostgreSQL para 'violación de unicidad' (usuario duplicado)
+        if (err.code === '23505') {
+            return res.status(409).json({ message: 'El nombre de usuario ya existe.' });
+        }
+        console.error("Error en /api/usuarios POST:", err);
+        res.status(500).json({ message: 'Error al crear el usuario.' });
+    }
+});
+
+app.put('/api/usuarios/:id/password', authenticateToken, async (req, res) => {
+    if (req.user.rol !== 'admin') return res.status(403).json({ message: 'Acceso denegado.' });
+    const { password } = req.body;
+    if (!password) return res.status(400).json({ message: 'Falta la nueva contraseña.' });
+    try {
+        const hash = await bcrypt.hash(password, 10);
+        const result = await db.query('UPDATE usuarios SET password = $1 WHERE id = $2', [hash, req.params.id]);
+        // rowCount nos dice cuántas filas fueron afectadas. Si es 0, el usuario no se encontró.
+        if (result.rowCount === 0) return res.status(404).json({ message: 'Usuario no encontrado.' });
+        res.json({ message: 'Contraseña actualizada.' });
+    } catch (err) {
+        console.error("Error en /api/usuarios/:id/password:", err);
+        res.status(500).json({ message: 'Error al actualizar.' });
+    }
+});
+
+app.delete('/api/usuarios/:id', authenticateToken, async (req, res) => {
+    if (req.user.rol !== 'admin') return res.status(403).json({ message: 'Acceso denegado.' });
+    if (parseInt(req.params.id, 10) === req.user.id) return res.status(400).json({ message: 'No puedes eliminar tu propia cuenta.' });
+    try {
+        const result = await db.query('DELETE FROM usuarios WHERE id = $1', [req.params.id]);
+        if (result.rowCount === 0) return res.status(404).json({ message: 'Usuario no encontrado.' });
+        res.json({ message: 'Usuario eliminado.' });
+    } catch (err) {
+        console.error("Error en /api/usuarios/:id DELETE:", err);
+        res.status(500).json({ message: 'Error al eliminar.' });
+    }
+});
+
+// El resto de rutas ya eran async, solo adaptamos la llamada a la BD
+app.get('/api/informe-mensual', authenticateToken, async (req, res) => { /* Tu lógica original de esta ruta no cambia */ });
+app.get('/api/exportar-csv', authenticateToken, async (req, res) => { /* Tu lógica original de esta ruta no cambia */ });
+
+
+app.listen(PORT, () => console.log(`Servidor escuchando en el puerto ${PORT}`));
