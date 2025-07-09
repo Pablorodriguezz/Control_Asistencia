@@ -16,8 +16,8 @@ const { Parser } = require('json2csv');
 
 // 2. INICIALIZACIÓN Y CONFIGURACIÓN
 const app = express();
-const PORT = 3000;
-const JWT_SECRET = 'tu_secreto_super_secreto_y_largo_y_dificil_de_adivinar_987654';
+const PORT = process.env.PORT || 3000;
+const JWT_SECRET = process.env.JWT_SECRET;
 
 app.use(cors());
 app.use(express.json());
