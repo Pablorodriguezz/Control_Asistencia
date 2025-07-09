@@ -1,14 +1,32 @@
+// database.js (CÓDIGO ACTUALIZADO)
+
 const sqlite3 = require('sqlite3').verbose();
 const bcrypt = require('bcryptjs');
+const path = require('path');
+const fs = require('fs');
 
-const db = new sqlite3.Database('./asistencia.db', (err) => {
+// 1. Determinar la ruta para los datos persistentes
+// Render define 'RENDER_DISK_PATH'. Si no, usamos el directorio local para desarrollo.
+const dataDir = process.env.RENDER_DISK_PATH || __dirname;
+const dbPath = path.join(dataDir, 'asistencia.db');
+
+// 2. Asegurarse de que el directorio de datos existe
+// Esto es crucial para el primer arranque en Render, donde el directorio del disco puede no existir.
+if (!fs.existsSync(dataDir)){
+    fs.mkdirSync(dataDir, { recursive: true });
+    console.log(`Directorio de datos creado en: ${dataDir}`);
+}
+
+// 3. Crear la conexión a la base de datos en la ruta correcta
+const db = new sqlite3.Database(dbPath, (err) => {
     if (err) {
         console.error("Error al abrir la base de datos:", err.message);
     } else {
-        console.log('Conectado a la base de datos local.');
+        console.log(`Conectado a la base de datos en: ${dbPath}`);
     }
 });
 
+// El resto del código no cambia
 db.serialize(() => {
     db.run(`CREATE TABLE IF NOT EXISTS usuarios (
         id INTEGER PRIMARY KEY AUTOINCREMENT,

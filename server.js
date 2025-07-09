@@ -1,6 +1,11 @@
+// server.js (CÓDIGO ACTUALIZADO)
+
 // =================================================================
-// SERVIDOR PARA LA APLICACIÓN DE CONTROL DE ASISTENCIA (VERSIÓN FINAL COMPLETA)
+// SERVIDOR PARA LA APLICACIÓN DE CONTROL DE ASISTENCIA (VERSIÓN DESPLIEGUE)
 // =================================================================
+
+// 0. CARGAR VARIABLES DE ENTORNO
+require('dotenv').config(); 
 
 // 1. IMPORTACIÓN DE MÓDULOS
 const express = require('express');
@@ -16,28 +21,46 @@ const { Parser } = require('json2csv');
 
 // 2. INICIALIZACIÓN Y CONFIGURACIÓN
 const app = express();
-const PORT = 3000;
-const JWT_SECRET = 'tu_secreto_super_secreto_y_largo_y_dificil_de_adivinar_987654';
+const PORT = process.env.PORT || 3000;
+const JWT_SECRET = process.env.JWT_SECRET; // Carga la clave secreta desde .env
+
+if (!JWT_SECRET) {
+    console.error("FATAL ERROR: JWT_SECRET no está definida en las variables de entorno.");
+    process.exit(1);
+}
 
 app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
 
-// --- CONFIGURACIÓN DE MULTER ---
-const uploadDir = path.join(__dirname, 'public/uploads');
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+// --- CONFIGURACIÓN DE ALMACENAMIENTO PERSISTENTE (PARA RENDER) ---
+// La ruta base para los datos persistentes (disco de Render o local)
+const dataDir = process.env.RENDER_DISK_PATH || __dirname;
+// La carpeta de subidas estará dentro de esa ruta
+const uploadDir = path.join(dataDir, 'public/uploads');
 
+// Crear el directorio de subidas si no existe
+if (!fs.existsSync(uploadDir)) {
+    fs.mkdirSync(uploadDir, { recursive: true });
+    console.log(`Directorio de uploads creado en: ${uploadDir}`);
+}
+
+// **IMPORTANTE**: Servir los archivos subidos estáticamente desde su nueva ubicación
+app.use('/uploads', express.static(uploadDir));
+
+
+// --- CONFIGURACIÓN DE MULTER ---
 const storage = multer.diskStorage({
     destination: (req, file, cb) => cb(null, uploadDir),
     filename: (req, file, cb) => {
-        // Asegurarse de que req.user exista antes de acceder a req.user.id
         const userId = req.user ? req.user.id : 'unknown';
         cb(null, `${Date.now()}-${userId}.jpeg`);
     }
 });
 const upload = multer({ storage });
 
-// --- MIDDLEWARE DE AUTENTICACIÓN ---
+
+// --- MIDDLEWARE DE AUTENTICACIÓN (sin cambios) ---
 function authenticateToken(req, res, next) {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
@@ -50,7 +73,7 @@ function authenticateToken(req, res, next) {
 }
 
 // =================================================================
-// RUTAS DE LA API
+// RUTAS DE LA API (sin cambios en la lógica de las rutas)
 // =================================================================
 
 // --- RUTA PÚBLICA: LOGIN ---
@@ -85,6 +108,7 @@ app.post('/api/fichar', authenticateToken, upload.single('foto'), (req, res) => 
     const { tipo } = req.body;
     const usuario_id = req.user.id;
     const fecha_hora = new Date().toISOString();
+    // La ruta web será /uploads/nombre_archivo.jpeg
     const foto_path = req.file ? `/uploads/${req.file.filename}` : null;
     if (!tipo || (tipo !== 'entrada' && tipo !== 'salida')) return res.status(400).json({ message: 'Tipo de fichaje inválido.' });
     if (!foto_path) return res.status(400).json({ message: 'No se ha proporcionado la foto de verificación.' });
@@ -233,6 +257,6 @@ app.get('/api/exportar-csv', authenticateToken, (req, res) => {
 // =================================================================
 // INICIO DEL SERVIDOR
 // =================================================================
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => { // Escuchar en 0.0.0.0 para compatibilidad con contenedores
     console.log(`¡Servidor corriendo en http://localhost:${PORT}`);
 });
