@@ -1,4 +1,8 @@
-// server.js
+// =================================================================
+// server.js (VERSIÓN FINAL COMPLETA - POSTGRESQL + CLOUDINARY)
+// =================================================================
+
+// 1. IMPORTACIÓN DE MÓDULOS
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -9,8 +13,9 @@ const { parseISO, differenceInSeconds, startOfMonth, endOfMonth } = require('dat
 const { Parser } = require('json2csv');
 const cloudinary = require('cloudinary').v2;
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
-const db = require('./database.js'); // Importamos nuestro nuevo database.js
+const db = require('./database.js');
 
+// 2. INICIALIZACIÓN Y CONFIGURACIÓN
 const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -43,7 +48,7 @@ const storage = new CloudinaryStorage({
 });
 const upload = multer({ storage: storage });
 
-// Middleware de autenticación (sin cambios)
+// Middleware de autenticación
 function authenticateToken(req, res, next) {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
@@ -56,7 +61,7 @@ function authenticateToken(req, res, next) {
 }
 
 // =================================================================
-// RUTAS DE LA API (ADAPTADAS PARA POSTGRESQL)
+// RUTAS DE LA API
 // =================================================================
 
 app.post('/api/login', async (req, res) => {
@@ -83,7 +88,7 @@ app.post('/api/login', async (req, res) => {
 
 app.post('/api/fichar', authenticateToken, upload.single('foto'), async (req, res) => {
     const { tipo } = req.body;
-    const foto_path = req.file ? req.file.path : null; // req.file.path es la URL de Cloudinary
+    const foto_path = req.file ? req.file.path : null;
     if (!tipo || !foto_path) return res.status(400).json({ message: 'Faltan datos (tipo o foto).' });
 
     try {
@@ -141,14 +146,12 @@ app.post('/api/usuarios', authenticateToken, async (req, res) => {
 
     try {
         const hash = await bcrypt.hash(password, 10);
-        // RETURNING id nos devuelve el id del usuario recién creado
         const result = await db.query(
             'INSERT INTO usuarios (nombre, usuario, password, rol) VALUES ($1, $2, $3, $4) RETURNING id',
             [nombre, usuario, hash, rol]
         );
         res.status(201).json({ message: `Usuario '${nombre}' creado.`, id: result.rows[0].id });
     } catch (err) {
-        // El código '23505' es de PostgreSQL para 'violación de unicidad' (usuario duplicado)
         if (err.code === '23505') {
             return res.status(409).json({ message: 'El nombre de usuario ya existe.' });
         }
@@ -164,7 +167,6 @@ app.put('/api/usuarios/:id/password', authenticateToken, async (req, res) => {
     try {
         const hash = await bcrypt.hash(password, 10);
         const result = await db.query('UPDATE usuarios SET password = $1 WHERE id = $2', [hash, req.params.id]);
-        // rowCount nos dice cuántas filas fueron afectadas. Si es 0, el usuario no se encontró.
         if (result.rowCount === 0) return res.status(404).json({ message: 'Usuario no encontrado.' });
         res.json({ message: 'Contraseña actualizada.' });
     } catch (err) {
@@ -186,9 +188,70 @@ app.delete('/api/usuarios/:id', authenticateToken, async (req, res) => {
     }
 });
 
-// El resto de rutas ya eran async, solo adaptamos la llamada a la BD
-app.get('/api/informe-mensual', authenticateToken, async (req, res) => { /* Tu lógica original de esta ruta no cambia */ });
-app.get('/api/exportar-csv', authenticateToken, async (req, res) => { /* Tu lógica original de esta ruta no cambia */ });
+app.get('/api/informe-mensual', authenticateToken, async (req, res) => {
+    if (req.user.rol !== 'admin') return res.status(403).json({ message: 'Acceso denegado.' });
+    const { anio, mes, usuarioId } = req.query;
+    if (!anio || !mes || !usuarioId) return res.status(400).json({ message: 'Parámetros incompletos.' });
 
+    try {
+        const fechaInicio = startOfMonth(new Date(anio, mes - 1, 1));
+        const fechaFin = endOfMonth(fechaInicio);
+        
+        const sql = `SELECT fecha_hora, tipo FROM registros WHERE usuario_id = $1 AND fecha_hora BETWEEN $2 AND $3 ORDER BY fecha_hora ASC`;
+        const result = await db.query(sql, [usuarioId, fechaInicio.toISOString(), fechaFin.toISOString()]);
+        const registros = result.rows;
 
+        const periodosTrabajados = [];
+        let entradaActual = null;
+        for (const registro of registros) {
+            if (registro.tipo === 'entrada' && !entradaActual) {
+                entradaActual = registro.fecha_hora;
+            } else if (registro.tipo === 'salida' && entradaActual) {
+                // PostgreSQL devuelve un objeto Date, así que podemos usarlo directamente
+                const duracionSegundos = differenceInSeconds(registro.fecha_hora, entradaActual);
+
+                if (duracionSegundos >= 0) {
+                    periodosTrabajados.push({
+                        fecha: entradaActual.toISOString().split('T')[0],
+                        entrada: entradaActual.toISOString(),
+                        salida: registro.fecha_hora.toISOString(),
+                        duracionSegundos: duracionSegundos
+                    });
+                }
+                entradaActual = null;
+            }
+        }
+        res.json(periodosTrabajados);
+    } catch (e) {
+        console.error("Error crítico en /informe-mensual:", e);
+        res.status(500).json({ message: "Error interno del servidor." });
+    }
+});
+
+app.get('/api/exportar-csv', authenticateToken, async (req, res) => {
+    if (req.user.rol !== 'admin') return res.status(403).json({ message: 'Acceso denegado.' });
+    const { anio, mes, usuarioId } = req.query;
+    if (!anio || !mes || !usuarioId) return res.status(400).json({ message: 'Faltan parámetros.' });
+
+    try {
+        const fechaInicio = startOfMonth(new Date(anio, mes - 1, 1));
+        const fechaFin = endOfMonth(fechaInicio);
+        const sql = `SELECT u.nombre, r.fecha_hora, r.tipo FROM registros r JOIN usuarios u ON r.usuario_id = u.id WHERE r.usuario_id = $1 AND r.fecha_hora BETWEEN $2 AND $3 ORDER BY r.fecha_hora ASC`;
+
+        const result = await db.query(sql, [usuarioId, fechaInicio.toISOString(), fechaFin.toISOString()]);
+        
+        const fields = ['nombre', 'fecha_hora', 'tipo'];
+        const json2csvParser = new Parser({ fields });
+        const csv = json2csvParser.parse(result.rows);
+        
+        res.header('Content-Type', 'text/csv');
+        res.attachment(`informe-${anio}-${mes}-usuario-${usuarioId}.csv`);
+        res.send(csv);
+    } catch (err) {
+        console.error("Error en /exportar-csv:", err);
+        res.status(500).json({ message: 'Error al obtener datos para exportar.' });
+    }
+});
+
+// INICIO DEL SERVIDOR
 app.listen(PORT, () => console.log(`Servidor escuchando en el puerto ${PORT}`));
