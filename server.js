@@ -1,11 +1,7 @@
-// server.js (CÓDIGO ACTUALIZADO)
-
-// =================================================================
-// SERVIDOR PARA LA APLICACIÓN DE CONTROL DE ASISTENCIA (VERSIÓN DESPLIEGUE)
-// =================================================================
+// server.js (CÓDIGO COMPLETO Y FINALMENTE CORREGIDO PARA RENDER)
 
 // 0. CARGAR VARIABLES DE ENTORNO
-require('dotenv').config(); 
+require('dotenv').config();
 
 // 1. IMPORTACIÓN DE MÓDULOS
 const express = require('express');
@@ -16,13 +12,13 @@ const multer = require('multer');
 const db = require('./database.js');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { parseISO, differenceInSeconds, startOfMonth, endOfMonth, getWeek } = require('date-fns');
+const { parseISO, differenceInSeconds, startOfMonth, endOfMonth } = require('date-fns');
 const { Parser } = require('json2csv');
 
 // 2. INICIALIZACIÓN Y CONFIGURACIÓN
 const app = express();
 const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET; // Carga la clave secreta desde .env
+const JWT_SECRET = process.env.JWT_SECRET;
 
 if (!JWT_SECRET) {
     console.error("FATAL ERROR: JWT_SECRET no está definida en las variables de entorno.");
@@ -33,21 +29,21 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
 
-// --- CONFIGURACIÓN DE ALMACENAMIENTO PERSISTENTE (PARA RENDER) ---
+// --- CONFIGURACIÓN DE ALMACENAMIENTO PERSISTENTE (VERSIÓN FINAL) ---
 // La ruta base para los datos persistentes (disco de Render o local)
 const dataDir = process.env.RENDER_DISK_PATH || __dirname;
-// La carpeta de subidas estará dentro de esa ruta
-const uploadDir = path.join(dataDir, 'public/uploads');
 
-// Crear el directorio de subidas si no existe
+// La carpeta de subidas estará DIRECTAMENTE dentro de la ruta base
+const uploadDir = path.join(dataDir, 'uploads');
+
+// Crear el directorio de subidas SI NO EXISTE.
 if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir, { recursive: true });
     console.log(`Directorio de uploads creado en: ${uploadDir}`);
 }
 
-// **IMPORTANTE**: Servir los archivos subidos estáticamente desde su nueva ubicación
+// Servir los archivos subidos estáticamente desde su nueva ubicación
 app.use('/uploads', express.static(uploadDir));
-
 
 // --- CONFIGURACIÓN DE MULTER ---
 const storage = multer.diskStorage({
@@ -60,7 +56,7 @@ const storage = multer.diskStorage({
 const upload = multer({ storage });
 
 
-// --- MIDDLEWARE DE AUTENTICACIÓN (sin cambios) ---
+// --- MIDDLEWARE DE AUTENTICACIÓN ---
 function authenticateToken(req, res, next) {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
@@ -108,11 +104,10 @@ app.post('/api/fichar', authenticateToken, upload.single('foto'), (req, res) => 
     const { tipo } = req.body;
     const usuario_id = req.user.id;
     const fecha_hora = new Date().toISOString();
-    // La ruta web será /uploads/nombre_archivo.jpeg
     const foto_path = req.file ? `/uploads/${req.file.filename}` : null;
     if (!tipo || (tipo !== 'entrada' && tipo !== 'salida')) return res.status(400).json({ message: 'Tipo de fichaje inválido.' });
     if (!foto_path) return res.status(400).json({ message: 'No se ha proporcionado la foto de verificación.' });
-    
+
     const sql = 'INSERT INTO registros (usuario_id, fecha_hora, tipo, foto_path) VALUES (?, ?, ?, ?)';
     db.run(sql, [usuario_id, fecha_hora, tipo, foto_path], function(err) {
         if (err) {
@@ -197,7 +192,7 @@ app.get('/api/informe-mensual', authenticateToken, (req, res) => {
         const fechaInicio = startOfMonth(new Date(anio, mes - 1, 1));
         const fechaFin = endOfMonth(fechaInicio);
         const sql = `SELECT fecha_hora, tipo FROM registros WHERE usuario_id = ? AND fecha_hora BETWEEN ? AND ? ORDER BY fecha_hora ASC`;
-        
+
         db.all(sql, [usuarioId, fechaInicio.toISOString(), fechaFin.toISOString()], (err, registros) => {
             if (err) {
                 console.error("DB Error en /informe-mensual:", err.message);
@@ -257,6 +252,6 @@ app.get('/api/exportar-csv', authenticateToken, (req, res) => {
 // =================================================================
 // INICIO DEL SERVIDOR
 // =================================================================
-app.listen(PORT, '0.0.0.0', () => { // Escuchar en 0.0.0.0 para compatibilidad con contenedores
+app.listen(PORT, '0.0.0.0', () => {
     console.log(`¡Servidor corriendo en http://localhost:${PORT}`);
 });
