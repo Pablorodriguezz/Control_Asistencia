@@ -1,19 +1,12 @@
-// database.js (CÓDIGO ACTUALIZADO Y CORREGIDO)
-
+// database.js (VERSIÓN PARA RAILWAY)
 const sqlite3 = require('sqlite3').verbose();
 const bcrypt = require('bcryptjs');
 const path = require('path');
 
-// 1. Determinar la ruta para los datos persistentes.
-// Render define 'RENDER_DISK_PATH'. Si no, usamos el directorio local para desarrollo.
-const dataDir = process.env.RENDER_DISK_PATH || __dirname;
+// Railway nos dará la ruta en una variable de entorno. Si no existe, usamos la carpeta local.
+const dataDir = process.env.RAILWAY_VOLUME_MOUNT_PATH || __dirname;
 const dbPath = path.join(dataDir, 'asistencia.db');
 
-// 2. ELIMINAMOS LA COMPROBACIÓN Y CREACIÓN DE dataDir.
-// No intentamos crear '/var/data'. Confiamos en que Render nos lo proporciona.
-// La librería sqlite3 creará el archivo 'asistencia.db' si no existe.
-
-// 3. Crear la conexión a la base de datos en la ruta correcta.
 const db = new sqlite3.Database(dbPath, (err) => {
     if (err) {
         console.error("Error al abrir la base de datos:", err.message);
@@ -22,7 +15,7 @@ const db = new sqlite3.Database(dbPath, (err) => {
     }
 });
 
-// El resto del código no cambia
+// El resto de tu código original se queda exactamente igual
 db.serialize(() => {
     db.run(`CREATE TABLE IF NOT EXISTS usuarios (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
